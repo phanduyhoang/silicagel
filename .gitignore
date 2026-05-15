@@ -1,0 +1,33 @@
+# Python cache/build
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual envs
+.venv/
+venv/
+env/
+
+# IDE/system
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Runtime generated files
+_relaunch.bat
+_relaunch.log
+
+# Defect/history payloads (exclude from git)
+data/history/*
+!data/history/.gitkeep
+
+# Runtime logs (exclude from git)
+data/logs/*
+!data/logs/.gitkeep
+
+# SQLite runtime index DB
+data/history/history_index.sqlite
+

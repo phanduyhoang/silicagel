@@ -1,0 +1,18 @@
+Isolated workspace inventory
+
+Runtime code:
+- app/main.py
+- app/server.py
+- app/modbus_tcp_send.py
+
+Runtime model files:
+- assets/models/yolo/best_finetune1902_v3_beads4x.pt
+- assets/models/classifier/best_classifier_20260219_123823.pt
+
+Runtime data locations:
+- data/history/beads_defect_frames_live
+- data/history/beads_defect_frames_live_annotated
+- data/history/beads_package_crops_live
+- data/history/history_index.sqlite (auto-created)
+- data/logs/gpu_runtime_metrics_*.csv
+
