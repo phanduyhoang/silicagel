@@ -2629,8 +2629,8 @@ def index():
 
 <div class="hdr">
   <span class="hdr-title">AI Defect Detector</span>
-  <span class="hdr-line" id="hdrL2">LINE 2: Idle</span>
-  <span class="hdr-line" id="hdrL1">LINE 1: Idle</span>
+  <span class="hdr-line" id="hdrL2">Линия № 2: Idle</span>
+  <span class="hdr-line" id="hdrL1">Линия № 1: Idle</span>
   <div class="hdr-sys">
     <button class="btn" onclick="openHistory()" style="font-size:10px;">History</button>
     <button class="btn power" onclick="shutdownComputer()" style="font-size:10px;">Shutdown</button>
@@ -2645,7 +2645,7 @@ def index():
 
     <!-- LINE 2 control card -->
     <div class="lcard">
-      <div class="line-title">LINE 2</div>
+      <div class="line-title">Линия № 2</div>
       <div class="btn-row">
         <button class="btn" id="startBtn" onclick="startL2()">Start</button>
         <button class="btn" id="stopBtn"  onclick="stopL2()">Stop</button>
@@ -2722,7 +2722,7 @@ def index():
 
     <!-- LINE 1 control card -->
     <div class="lcard">
-      <div class="line-title">LINE 1 <span style="font-size:9px;color:#555;font-weight:400;">(not connected)</span></div>
+      <div class="line-title">Линия № 1 <span style="font-size:9px;color:#555;font-weight:400;">(not connected)</span></div>
       <div class="btn-row">
         <button class="btn" id="startBtnL1" onclick="startL1()">Start</button>
         <button class="btn" id="stopBtnL1"  onclick="stopL1()">Stop</button>
@@ -2751,7 +2751,7 @@ def index():
   <div class="right">
 
     <div class="line-group">
-      <div class="lg-hdr">LINE 2 &mdash; Cameras 1 &middot; 2 &middot; 3</div>
+      <div class="lg-hdr">Линия № 2 &mdash; Камеры 1 &middot; 2 &middot; 3</div>
       <div class="cams-row">
         <div class="cam-cell">
           <div class="cam-img-wrap"><img id="cam0" alt=""></div>
@@ -2778,7 +2778,7 @@ def index():
     </div>
 
     <div class="line-group">
-      <div class="lg-hdr">LINE 1 &mdash; Cameras 4 &middot; 5 &middot; 6</div>
+      <div class="lg-hdr">Линия № 1 &mdash; Камеры 4 &middot; 5 &middot; 6</div>
       <div class="cams-row">
         <div class="cam-cell">
           <div class="cam-img-wrap"><img id="cam3" alt=""></div>
@@ -2894,7 +2894,7 @@ async function poll() {
       const stEl = document.getElementById('statusL2');
       stEl.textContent = state === 'stopped' ? 'STOPPED' : 'MOVING';
       stEl.className = 'status-line ' + (state === 'stopped' ? 'stopped' : 'moving');
-      document.getElementById('hdrL2').textContent = 'LINE 2: ' + (state === 'stopped' ? 'STOPPED' : 'MOVING');
+      document.getElementById('hdrL2').textContent = 'Линия № 2: ' + (state === 'stopped' ? 'STOPPED' : 'MOVING');
 
       const fmt = v => v == null ? '--' : Number(v).toFixed(1);
       document.getElementById('metricsL2').textContent =
@@ -2960,7 +2960,7 @@ async function poll() {
       }
 
       const nowMs = Date.now();
-      if (!_streamBusy && !_loadingResults && (nowMs - _lastStreamMs) >= STREAM_INTERVAL_MS) {
+      if (!_streamBusy && (nowMs - _lastStreamMs) >= STREAM_INTERVAL_MS) {
         _streamBusy = true; _lastStreamMs = nowMs;
         const si = document.getElementById('stream');
         si.onload = si.onerror = () => { _streamBusy = false; };
@@ -3009,12 +3009,12 @@ async function pollL1() {
         _l1Running = false; setRunButtonsL1(false);
         document.getElementById('statusL1').textContent = 'Idle';
         document.getElementById('statusL1').className = 'status-line idle';
-        document.getElementById('hdrL1').textContent = 'LINE 1: Idle';
+        document.getElementById('hdrL1').textContent = 'Линия № 1: Idle';
         break;
       }
       document.getElementById('statusL1').textContent = 'Running';
       document.getElementById('statusL1').className = 'status-line moving';
-      document.getElementById('hdrL1').textContent = 'LINE 1: Running';
+      document.getElementById('hdrL1').textContent = 'Линия № 1: Running';
       if (s.runtime_str) document.getElementById('timerL1').textContent = s.runtime_str + ' | Defects: 0';
 
       if (!_l1PlaceholderLoaded) {
@@ -3985,9 +3985,15 @@ def _history_connect() -> sqlite3.Connection:
         )
         """
     )
+    # Migration: add line column if missing; all existing records are from Line 2
+    existing_cols = [r[1] for r in conn.execute("PRAGMA table_info(defect_history)").fetchall()]
+    if "line" not in existing_cols:
+        conn.execute("ALTER TABLE defect_history ADD COLUMN line INTEGER NOT NULL DEFAULT 2")
+        conn.commit()
     conn.execute("CREATE INDEX IF NOT EXISTS idx_defect_history_ts ON defect_history(ts_ms DESC)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_defect_history_day ON defect_history(day)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_defect_history_shift ON defect_history(shift_key)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_defect_history_line ON defect_history(line)")
     return conn
 
 
@@ -4027,19 +4033,20 @@ def _sync_history_index(root: Path, force: bool = False) -> None:
                 is_day_shift = (8 * 60) <= minute_of_day < (19 * 60 + 30)
                 shift_key = "day" if is_day_shift else "night"
                 shift_label = "Дневная смена" if is_day_shift else "Ночная смена"
-                upserts.append((name, ts_ms, day, minute_of_day, shift_key, shift_label, mtime_ns))
+                upserts.append((name, ts_ms, day, minute_of_day, shift_key, shift_label, mtime_ns, 2))
             if upserts:
                 conn.executemany(
                     """
-                    INSERT INTO defect_history(filename, ts_ms, day, minute_of_day, shift_key, shift_label, mtime_ns)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO defect_history(filename, ts_ms, day, minute_of_day, shift_key, shift_label, mtime_ns, line)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(filename) DO UPDATE SET
                         ts_ms=excluded.ts_ms,
                         day=excluded.day,
                         minute_of_day=excluded.minute_of_day,
                         shift_key=excluded.shift_key,
                         shift_label=excluded.shift_label,
-                        mtime_ns=excluded.mtime_ns
+                        mtime_ns=excluded.mtime_ns,
+                        line=excluded.line
                     """,
                     upserts,
                 )
@@ -4058,6 +4065,7 @@ def _history_where_clause(
     start_time: Optional[str],
     end_time: Optional[str],
     shift: Optional[str],
+    line: Optional[str] = None,
 ) -> tuple[str, list]:
     clauses: list[str] = []
     params: list = []
@@ -4071,6 +4079,13 @@ def _history_where_clause(
     if shift_norm in ("day", "night"):
         clauses.append("shift_key = ?")
         params.append(shift_norm)
+    try:
+        line_int = int(line) if line and line.strip() else None
+    except (ValueError, TypeError):
+        line_int = None
+    if line_int is not None:
+        clauses.append("line = ?")
+        params.append(line_int)
     start_min = _parse_hhmm_to_minutes(start_time)
     end_min = _parse_hhmm_to_minutes(end_time)
     if start_min is not None and end_min is not None:
@@ -4100,11 +4115,12 @@ def _fetch_history_page(
     start_time: Optional[str],
     end_time: Optional[str],
     shift: Optional[str],
+    line: Optional[str] = None,
     page: int,
     page_size: int,
 ) -> dict:
     _sync_history_index(root)
-    where, params = _history_where_clause(day_from, day_to, start_time, end_time, shift)
+    where, params = _history_where_clause(day_from, day_to, start_time, end_time, shift, line)
     conn = _history_connect()
     try:
         total_items = int(conn.execute(f"SELECT COUNT(*) FROM defect_history{where}", params).fetchone()[0])
@@ -4113,7 +4129,7 @@ def _fetch_history_page(
         offset = (safe_page - 1) * page_size
         rows = conn.execute(
             f"""
-            SELECT filename, ts_ms, day, shift_label, shift_key
+            SELECT filename, ts_ms, day, shift_label, shift_key, line
             FROM defect_history
             {where}
             ORDER BY ts_ms DESC
@@ -4134,7 +4150,7 @@ def _fetch_history_page(
     finally:
         conn.close()
     items = []
-    for filename, ts_ms, day, shift_label, shift_key in rows:
+    for filename, ts_ms, day, shift_label, shift_key, line_num in rows:
         dt = datetime.fromtimestamp(int(ts_ms) / 1000.0)
         items.append(
             {
@@ -4146,6 +4162,7 @@ def _fetch_history_page(
                 "ru_datetime": dt.strftime("%d.%m.%Y %H:%M:%S"),
                 "shift": shift_label,
                 "shift_key": shift_key,
+                "line": int(line_num) if line_num is not None else 2,
             }
         )
     day_count = int((stats[0] or 0) if stats else 0)
@@ -4655,6 +4672,7 @@ def history_page():
     .pill { display: inline-block; padding: 3px 8px; border-radius: 999px; font-size: 12px; margin-left: 6px; }
     .pill.day { background: #2a6fdb; color: #fff; }
     .pill.night { background: #7b4ad9; color: #fff; }
+    .pill.line { background: #2a3a4a; color: #9ba8bc; }
     .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 10px; }
     .item { background: #111722; border-radius: 8px; padding: 8px; }
     .item img { width: 100%; height: auto; border-radius: 6px; background: #000; cursor: zoom-in; }
@@ -4883,17 +4901,6 @@ async function loadHistory(append = false) {
   const shiftLegendEl = document.getElementById('shiftLegend');
   const pagerInfoEl = document.getElementById('pagerInfo');
   const grid = document.getElementById('grid');
-  // Line 1 has no camera data yet (placeholder); show empty immediately
-  const lineFilter = document.getElementById('lineFilter').value || '';
-  if (lineFilter === '1') {
-    _loadedItems = 0; _zoomItems = []; _currentPage = 1; _totalPages = 1;
-    grid.innerHTML = '<div class="card">Нет записей — Линия № 1 ещё не подключена.</div>';
-    metaEl.textContent = 'Линия № 1: нет данных';
-    shiftLegendEl.innerHTML = '';
-    if (pagerInfoEl) pagerInfoEl.textContent = 'Страница 1 / 1';
-    _loadingHistory = false;
-    return;
-  }
   try {
     const params = getFilters();
     const r = await fetch('/history-data?' + params.toString());
@@ -4919,10 +4926,12 @@ async function loadHistory(append = false) {
         src: src,
         ru_datetime: (it.ru_datetime || it.datetime || '--').toString(),
       });
+      const lineNum = it.line || 2;
       renderedParts.push(
         '<div class="item">' +
           '<div class="row"><b>' + esc(it.ru_datetime || it.datetime) + '</b>' +
-          '<span class="pill ' + esc(it.shift_key || '') + '">' + esc(it.shift || '') + '</span></div>' +
+          '<span class="pill ' + esc(it.shift_key || '') + '">' + esc(it.shift || '') + '</span>' +
+          '<span class="pill line">Линия № ' + lineNum + '</span></div>' +
           '<img loading="lazy" src="' + src + '" onclick="openZoomByIndex(' + idx + ')" />' +
         '</div>'
       );
@@ -5000,6 +5009,7 @@ def history_data(
     start_time: Optional[str] = None,
     end_time: Optional[str] = None,
     shift: Optional[str] = None,
+    line: Optional[str] = None,
     page: int = 1,
     page_size: int = 100,
 ):
@@ -5029,6 +5039,7 @@ def history_data(
         start_time=start_time,
         end_time=end_time,
         shift=shift,
+        line=line,
         page=safe_page,
         page_size=page_size,
     )
