@@ -2810,7 +2810,7 @@ def index():
 <script>
 let running = false, _l1Running = false;
 let _lastResultId = null;
-let _streamBusy = false, _loadingResults = false, _lastStreamMs = 0;
+let _streamBusy = false, _loadingResults = false;
 const STREAM_INTERVAL_MS = 120;
 let _signalEnabled = true, _signalEnabledL1 = true;
 let _l2CamOrder = [0, 2, 1];  // display slot -> data index (default: cam11, cam13, cam12)
@@ -2959,13 +2959,6 @@ async function poll() {
         _loadingResults = false;
       }
 
-      const nowMs = Date.now();
-      if (!_streamBusy && (nowMs - _lastStreamMs) >= STREAM_INTERVAL_MS) {
-        _streamBusy = true; _lastStreamMs = nowMs;
-        const si = document.getElementById('stream');
-        si.onload = si.onerror = () => { _streamBusy = false; };
-        si.src = '/stream?ts=' + nowMs;
-      }
     } catch(e) {}
     await new Promise(r => setTimeout(r, 100));
   }
@@ -3133,6 +3126,16 @@ window.addEventListener('load', () => {
 
   attachExposureHandlers();
   startL2();
+
+  // Stream thumbnail runs on its own timer — completely independent of the
+  // poll loop so it never stalls when result images are being loaded.
+  setInterval(() => {
+    if (_streamBusy) return;
+    _streamBusy = true;
+    const si = document.getElementById('stream');
+    si.onload = si.onerror = () => { _streamBusy = false; };
+    si.src = '/stream?ts=' + Date.now();
+  }, STREAM_INTERVAL_MS);
 });
 </script>
 </body>
