@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<!--
+  STATIC PREVIEW — open this file in a browser to check the layout
+  before deploying to the robot computer.
+  All API calls are mocked so no server is needed.
+-->
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>AI Defect Detector — PREVIEW (static mock)</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #0f1115; color: #e6e6e6; font-family: Arial, sans-serif;
+           height: 100vh; overflow: hidden; display: flex; flex-direction: column; }
+
+    .hdr { flex-shrink: 0; background: #13171f; border-bottom: 1px solid #1e242e;
+           padding: 5px 14px; display: flex; align-items: center; gap: 16px; }
+    .hdr-title { font-size: 13px; font-weight: 700; white-space: nowrap; }
+    .hdr-line { font-size: 12px; white-space: nowrap; color: #9ba8bc; }
+    .hdr-sys { display: flex; gap: 5px; margin-left: auto; }
+    .preview-badge { font-size: 10px; background: #5a3a00; color: #ffb347;
+                     border-radius: 4px; padding: 2px 7px; margin-left: 6px; }
+
+    .main { flex: 1; min-height: 0; display: flex; gap: 8px; padding: 7px 8px 7px; }
+
+    .left { width: 330px; flex-shrink: 0; display: flex; flex-direction: column;
+            gap: 7px; overflow-y: auto; }
+    .lcard { background: #151922; border-radius: 8px; padding: 9px 10px;
+             display: flex; flex-direction: column; gap: 6px; }
+    .lcard { border-top: 1px solid #252b38; }
+    .line-title { font-size: 12px; font-weight: 700; color: #c9cdd6; letter-spacing: .5px; }
+
+    .btn-row { display: flex; gap: 4px; flex-wrap: wrap; }
+    .btn { padding: 4px 10px; border: none; border-radius: 5px; background: #2a2f3a;
+           color: #fff; cursor: pointer; font-size: 11px; }
+    .btn.active-start { background: #1d7f4f; }
+    .btn.active-stop  { background: #a04a4a; }
+    .btn.power        { background: #6a2020; }
+    .btn.power.cancel { background: #4a3a18; }
+
+    .status-line { font-size: 13px; font-weight: 700; }
+    .status-line.moving  { color: #7bd88f; }
+    .status-line.stopped { color: #f0a35a; }
+    .status-line.idle    { color: #666; }
+
+    .sw-row { display: flex; align-items: center; gap: 5px; }
+    .sw-label { font-size: 10px; color: #999; }
+    .sw { position: relative; display: inline-block; width: 36px; height: 20px; }
+    .sw input { opacity: 0; width: 0; height: 0; }
+    .sw-track { position: absolute; cursor: pointer; inset: 0; background: #444;
+                border-radius: 20px; transition: .15s; }
+    .sw-track:before { content: ""; position: absolute; height: 14px; width: 14px;
+                       left: 3px; bottom: 3px; background: #fff; border-radius: 50%;
+                       transition: .15s; }
+    input:checked + .sw-track { background: #2ecc71; }
+    input:checked + .sw-track:before { transform: translateX(16px); }
+
+    .mtext { font-size: 10px; color: #999; white-space: pre-wrap; line-height: 1.4; }
+    .timer-line { font-size: 11px; color: #c9cdd6; font-weight: 600; }
+
+    .sliders-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 5px 8px; }
+    .sl-row { display: flex; flex-direction: column; gap: 1px; }
+    .sl-lbl { font-size: 10px; color: #888; }
+    .sl-inner { display: flex; align-items: center; gap: 3px; }
+    .sl-inner input[type=range] { flex: 1; height: 4px; border-radius: 2px;
+                                  background: #2a2f3a; -webkit-appearance: none; outline: none; }
+    .sl-inner input[type=range]::-webkit-slider-thumb { -webkit-appearance: none;
+      width: 12px; height: 12px; border-radius: 50%; background: #2ecc71; cursor: pointer; }
+    .sl-val { font-size: 10px; color: #ccc; min-width: 34px; text-align: right; }
+
+    .exp-row { display: flex; gap: 3px; align-items: center; }
+    .exp-lbl { font-size: 9px; color: #888; min-width: 55px; flex-shrink: 0; }
+    .exp-inp { flex: 1; min-width: 0; background: #0f1115; color: #e6e6e6;
+               border: 1px solid #2a2f3a; border-radius: 3px; padding: 2px 4px; font-size: 10px; }
+
+    /* Camera reorder row */
+    .cam-order-row { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+    .cam-order-lbl { font-size: 9px; color: #666; white-space: nowrap; min-width: 55px; flex-shrink: 0; }
+    .cam-slot { font-size: 9px; color: #9ba8bc; background: #1a1f2a; border: 1px solid #252b38;
+                border-radius: 3px; padding: 2px 5px; min-width: 36px; text-align: center; }
+    .swap-btn { font-size: 10px; color: #555; background: none; border: none;
+                cursor: pointer; padding: 0 1px; line-height: 1; transition: color .12s; }
+    .swap-btn:hover { color: #9ba8bc; }
+
+    .stream-thumb-wrap { background: #0a0c10; border-radius: 4px; height: 80px;
+                         display: flex; align-items: center; justify-content: center; }
+    .stream-thumb-label { font-size: 9px; color: #444; }
+
+    .right { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+    .line-group { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 4px; }
+    .lg-hdr { flex-shrink: 0; font-size: 10px; font-weight: 700; letter-spacing: 1px;
+              padding: 3px 6px; border-radius: 3px; }
+    .lg-hdr { color: #6b7a94; background: #111520; }
+    .cams-row { flex: 1; min-height: 0; display: flex; gap: 6px; }
+    .cam-cell { flex: 1; min-width: 0; background: #151922; border-radius: 7px;
+                overflow: hidden; display: flex; flex-direction: column; }
+    .cam-cell { border-top: 1px solid #252b38; }
+    .cam-img-wrap { flex: 1; min-height: 0; background: #0a0c10;
+                    display: flex; align-items: center; justify-content: center; overflow: hidden; }
+    .cam-img-wrap .mock-cam { width: 100%; height: 100%; display: flex; flex-direction: column;
+                               align-items: center; justify-content: center; gap: 4px; }
+    .cam-img-wrap .mock-cam .mock-label { font-size: 10px; color: #555; }
+    .cam-img-wrap .mock-cam .mock-ok   { font-size: 11px; font-weight: 700; color: #7bd88f; }
+    .cam-img-wrap .mock-cam .mock-nc   { font-size: 11px; font-weight: 700; color: #556070; }
+    .cam-footer { flex-shrink: 0; padding: 3px 8px; display: flex;
+                  justify-content: space-between; align-items: center; min-height: 20px; }
+    .cam-label { font-size: 10px; color: #777; }
+    .det-text { font-size: 10px; font-weight: 700; }
+    .det-text.ok   { color: #7bd88f; }
+    .det-text.bad  { color: #ff6b6b; }
+    .det-text.idle { color: #555; }
+  </style>
+</head>
+<body>
+
+<div class="hdr">
+  <span class="hdr-title">AI Defect Detector</span>
+  <span class="hdr-line" id="hdrL2">LINE 2: MOVING</span>
+  <span class="hdr-line" id="hdrL1">LINE 1: Idle</span>
+  <span class="preview-badge">STATIC PREVIEW</span>
+  <div class="hdr-sys">
+    <button class="btn" style="font-size:10px;">History</button>
+    <button class="btn power" style="font-size:10px;">Shutdown</button>
+    <button class="btn power cancel" style="font-size:10px;">Cancel</button>
+  </div>
+</div>
+
+<div class="main">
+
+  <!-- Left panel -->
+  <div class="left">
+
+    <!-- LINE 2 control card -->
+    <div class="lcard">
+      <div class="line-title">LINE 2</div>
+      <div class="btn-row">
+        <button class="btn active-start">Start</button>
+        <button class="btn">Stop</button>
+      </div>
+      <div class="sw-row">
+        <label class="sw"><input type="checkbox" checked><span class="sw-track"></span></label>
+        <span class="sw-label">Send signal to line</span>
+      </div>
+      <div class="status-line moving">MOVING</div>
+      <div class="mtext">inf=12.3ms  cap=8.1ms  spd=2.4</div>
+      <div class="mtext">pre 1.2ms | inf 12.3ms | post 0.8ms</div>
+      <div class="timer-line">00:47:22 | Defects: 3</div>
+      <div class="mtext">--</div>
+      <!-- Motion stream thumbnail placeholder -->
+      <div class="stream-thumb-wrap">
+        <span class="stream-thumb-label">Motion cam stream (low-res)</span>
+      </div>
+      <!-- Controls -->
+      <div class="sliders-grid" style="margin-top:3px;">
+        <div class="sl-row">
+          <span class="sl-lbl">Native YOLO conf</span>
+          <div class="sl-inner">
+            <input type="range" min="0" max="100" value="38">
+            <span class="sl-val">0.38</span>
+          </div>
+        </div>
+        <div class="sl-row">
+          <span class="sl-lbl">640 YOLO conf</span>
+          <div class="sl-inner">
+            <input type="range" min="0" max="100" value="50">
+            <span class="sl-val">0.50</span>
+          </div>
+        </div>
+        <div class="sl-row">
+          <span class="sl-lbl">640 IoU min</span>
+          <div class="sl-inner">
+            <input type="range" min="0" max="100" value="35">
+            <span class="sl-val">0.35</span>
+          </div>
+        </div>
+        <div class="sl-row">
+          <span class="sl-lbl">Brightness</span>
+          <div class="sl-inner">
+            <input type="range" min="50" max="300" value="150">
+            <span class="sl-val">1.50x</span>
+          </div>
+        </div>
+        <div class="sl-row">
+          <span class="sl-lbl">Y640 trigger</span>
+          <div class="sl-inner">
+            <input type="range" min="0" max="100" value="47">
+            <span class="sl-val">0.47</span>
+          </div>
+        </div>
+        <div class="sl-row">
+          <span class="sl-lbl">CLF threshold</span>
+          <div class="sl-inner">
+            <input type="range" min="0" max="100" value="80">
+            <span class="sl-val">0.80</span>
+          </div>
+        </div>
+      </div>
+      <div class="exp-row" style="margin-top:3px;">
+        <span class="exp-lbl">Exposure (us)</span>
+        <input type="number" value="1300" class="exp-inp" placeholder="Cam 11">
+        <input type="number" value="1300" class="exp-inp" placeholder="Cam 13">
+        <input type="number" value="1300" class="exp-inp" placeholder="Cam 12">
+      </div>
+      <div class="cam-order-row" style="margin-top:3px;">
+        <span class="cam-order-lbl">Cam slots</span>
+        <span class="cam-slot">13</span>
+        <button class="swap-btn" title="Swap slots 1&amp;2">&#8644;</button>
+        <span class="cam-slot">11</span>
+        <button class="swap-btn" title="Swap slots 2&amp;3">&#8644;</button>
+        <span class="cam-slot">12</span>
+      </div>
+    </div>
+
+    <!-- LINE 1 control card -->
+    <div class="lcard">
+      <div class="line-title">LINE 1 <span style="font-size:9px;color:#555;font-weight:400;">(not connected)</span></div>
+      <div class="btn-row">
+        <button class="btn">Start</button>
+        <button class="btn active-stop">Stop</button>
+      </div>
+      <div class="sw-row">
+        <label class="sw"><input type="checkbox"><span class="sw-track"></span></label>
+        <span class="sw-label">Send signal to line</span>
+      </div>
+      <div class="status-line idle">Idle</div>
+      <div class="timer-line">--</div>
+      <div class="mtext" style="color:#3a4a5a;margin-top:2px;">Cameras: placeholder - IPs not set</div>
+      <div class="mtext" style="color:#3a4a5a;">Relay signal: placeholder - register not set</div>
+      <div class="cam-order-row" style="margin-top:3px;">
+        <span class="cam-order-lbl">Cam slots</span>
+        <span class="cam-slot">4</span>
+        <button class="swap-btn" title="Swap slots 1&amp;2">&#8644;</button>
+        <span class="cam-slot">5</span>
+        <button class="swap-btn" title="Swap slots 2&amp;3">&#8644;</button>
+        <span class="cam-slot">6</span>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Right panel (6 cameras) -->
+  <div class="right">
+
+    <div class="line-group">
+      <div class="lg-hdr">LINE 2 &mdash; Cameras 1 &middot; 2 &middot; 3</div>
+      <div class="cams-row">
+        <div class="cam-cell">
+          <div class="cam-img-wrap">
+            <div class="mock-cam">
+              <span class="mock-label">Cam 10.141.13.11</span>
+              <span class="mock-ok">OK — no defect</span>
+            </div>
+          </div>
+          <div class="cam-footer">
+            <span class="cam-label">Cam 11</span>
+            <span class="det-text ok">OK</span>
+          </div>
+        </div>
+        <div class="cam-cell">
+          <div class="cam-img-wrap">
+            <div class="mock-cam">
+              <span class="mock-label">Cam 10.141.13.13</span>
+              <span class="det-text bad" style="font-size:11px;">DEFECT: beads-package</span>
+            </div>
+          </div>
+          <div class="cam-footer">
+            <span class="cam-label">Cam 13</span>
+            <span class="det-text bad">DEFECT</span>
+          </div>
+        </div>
+        <div class="cam-cell">
+          <div class="cam-img-wrap">
+            <div class="mock-cam">
+              <span class="mock-label">Cam 10.141.13.12</span>
+              <span class="mock-ok">OK — no defect</span>
+            </div>
+          </div>
+          <div class="cam-footer">
+            <span class="cam-label">Cam 12</span>
+            <span class="det-text ok">OK</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="line-group">
+      <div class="lg-hdr">LINE 1 &mdash; Cameras 4 &middot; 5 &middot; 6</div>
+      <div class="cams-row">
+        <div class="cam-cell">
+          <div class="cam-img-wrap">
+            <div class="mock-cam">
+              <span class="mock-nc">Not Connected</span>
+              <span class="mock-label">placeholder</span>
+            </div>
+          </div>
+          <div class="cam-footer">
+            <span class="cam-label">Cam 4</span>
+            <span class="det-text idle">--</span>
+          </div>
+        </div>
+        <div class="cam-cell">
+          <div class="cam-img-wrap">
+            <div class="mock-cam">
+              <span class="mock-nc">Not Connected</span>
+              <span class="mock-label">placeholder</span>
+            </div>
+          </div>
+          <div class="cam-footer">
+            <span class="cam-label">Cam 5</span>
+            <span class="det-text idle">--</span>
+          </div>
+        </div>
+        <div class="cam-cell">
+          <div class="cam-img-wrap">
+            <div class="mock-cam">
+              <span class="mock-nc">Not Connected</span>
+              <span class="mock-label">placeholder</span>
+            </div>
+          </div>
+          <div class="cam-footer">
+            <span class="cam-label">Cam 6</span>
+            <span class="det-text idle">--</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+</body>
+</html>

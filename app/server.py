@@ -181,6 +181,16 @@ LINE_SIGNAL_COOLDOWN_MS = int(os.getenv("HIK_LINE_SIGNAL_COOLDOWN_MS", str(6000)
 LINE_SIGNAL_UNIT = int(os.getenv("HIK_LINE_SIGNAL_UNIT", "1"))
 LINE_SIGNAL_REGISTER = int(os.getenv("HIK_LINE_SIGNAL_REGISTER", "0x01D6"), 0)
 
+# ---- Line 1 placeholder config (cameras not yet connected) ----
+LINE1_IPS = os.getenv("L1_IPS", "").strip()           # future: "ip1,ip2,ip3"
+LINE1_MOTION_IP = os.getenv("L1_MOTION_IP", "").strip()
+LINE1_SIGNAL_ENABLE = os.getenv("L1_SIGNAL_ENABLE", "0").strip() in ("1", "true", "True")
+LINE1_SIGNAL_IP = os.getenv("L1_SIGNAL_IP", "0.0.0.0").strip()
+LINE1_SIGNAL_PORT = int(os.getenv("L1_SIGNAL_PORT", "502"))
+LINE1_SIGNAL_REGISTER = int(os.getenv("L1_SIGNAL_REGISTER", "0x0001"), 0)
+LINE1_SIGNAL_HOLD_S = float(os.getenv("L1_SIGNAL_HOLD", "0.3"))
+LINE1_SIGNAL_COOLDOWN_MS = int(os.getenv("L1_SIGNAL_COOLDOWN_MS", "6000"))
+
 # Maintenance auto-refresh: restart runtime pipeline periodically
 # while preserving session timer/counters until manual Stop.
 AUTO_REFRESH_ENABLED = os.getenv("HIK_AUTO_REFRESH_ENABLED", "0").strip() in ("1", "true", "True")
@@ -385,6 +395,12 @@ _metrics_end_ts: float = 0.0
 _metrics_proc: Any = None
 _nvidia_smi_adv_available: Optional[bool] = None
 _nvidia_smi_basic_warned: bool = False
+
+# ---- Line 1 state (placeholder — cameras not yet connected) ----
+_l1_lock = threading.Lock()
+_l1_running: bool = False
+_l1_start_ts: float = 0.0
+_l1_signal_ui_enabled: bool = True
 
 # Batch inference state (initialised once at warmup, reused for all calls)
 _net: Optional[torch.nn.Module] = None   # underlying nn.Module from YOLO
@@ -2497,679 +2513,626 @@ def index():
 <!DOCTYPE html>
 <html>
 <head>
-  <title>ИИ-Детектор силикагеля (3 камеры)</title>
+  <meta charset="utf-8">
+  <title>AI Defect Detector — Line 1 &amp; Line 2</title>
   <style>
-    body { background: #0f1115; color: #e6e6e6; font-family: Arial, sans-serif; }
-    .row { display: flex; gap: 16px; }
-    .card { background: #151922; padding: 12px; border-radius: 10px; }
-    img { width: 100%; height: auto; background: #111; }
-    .small { font-size: 13px; color: #c9cdd6; white-space: pre-wrap; }
-    .det { font-size: 13px; font-weight: 700; margin-top: 2px; white-space: pre-wrap; min-height: 18px; }
-    .det.ok { color: #7bd88f; }
-    .det.bad { color: #ff6b6b; }
-    .status { font-size: 20px; margin-top: 6px; }
-    .status.moving { color: #7bd88f; }
-    .status.stopped { color: #f0a35a; }
-    .btn { padding: 8px 12px; margin-right: 8px; border: none; border-radius: 6px; background: #2a2f3a; color: #fff; cursor: pointer; transition: background-color .15s ease; }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #0f1115; color: #e6e6e6; font-family: Arial, sans-serif;
+           height: 100vh; overflow: hidden; display: flex; flex-direction: column; }
+
+    /* Header */
+    .hdr { flex-shrink: 0; background: #13171f; border-bottom: 1px solid #1e242e;
+           padding: 5px 14px; display: flex; align-items: center; gap: 16px; }
+    .hdr-title { font-size: 13px; font-weight: 700; white-space: nowrap; }
+    .hdr-line { font-size: 12px; white-space: nowrap; color: #9ba8bc; }
+    .hdr-sys { display: flex; gap: 5px; margin-left: auto; }
+
+    /* Main layout */
+    .main { flex: 1; min-height: 0; display: flex; gap: 8px; padding: 7px 8px 7px; }
+
+    /* Left panel */
+    .left { width: 330px; flex-shrink: 0; display: flex; flex-direction: column;
+            gap: 7px; overflow-y: auto; }
+    .lcard { background: #151922; border-radius: 8px; padding: 9px 10px;
+             display: flex; flex-direction: column; gap: 6px; }
+    .lcard { border-top: 1px solid #252b38; }
+    .line-title { font-size: 12px; font-weight: 700; color: #c9cdd6; letter-spacing: .5px; }
+
+    /* Buttons */
+    .btn-row { display: flex; gap: 4px; flex-wrap: wrap; }
+    .btn { padding: 4px 10px; border: none; border-radius: 5px; background: #2a2f3a;
+           color: #fff; cursor: pointer; font-size: 11px; transition: background .12s; }
+    .btn:hover { background: #353d4d; }
     .btn.active-start { background: #1d7f4f; }
-    .btn.active-stop { background: #a04a4a; }
-    .btn.power { background: #8b2f2f; }
-    .btn.power.cancel { background: #5a4a2a; }
-    .top { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
-    .metrics { min-height: 160px; }
-    .motion-card { max-width: 360px; }
+    .btn.active-stop  { background: #a04a4a; }
+    .btn.power        { background: #6a2020; }
+    .btn.power.cancel { background: #4a3a18; }
 
-    /* Modern switch */
-    .switch-row { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
-    .switch-label { font-size: 13px; color: #c9cdd6; }
-    .switch {
-      position: relative;
-      display: inline-block;
-      width: 52px;
-      height: 28px;
-    }
-    .switch input {
-      opacity: 0;
-      width: 0;
-      height: 0;
-    }
-    .slider {
-      position: absolute;
-      cursor: pointer;
-      top: 0;
-      left: 0;
-      right: 0;
-      bottom: 0;
-      background-color: #555a66;
-      transition: .2s;
-      border-radius: 28px;
-    }
-    .slider:before {
-      position: absolute;
-      content: "";
-      height: 22px;
-      width: 22px;
-      left: 3px;
-      bottom: 3px;
-      background-color: white;
-      transition: .2s;
-      border-radius: 50%;
-    }
-    input:checked + .slider {
-      background-color: #2ecc71;
-    }
-    input:checked + .slider:before {
-      transform: translateX(24px);
-    }
-    
-    /* Slider controls */
-    .slider-control {
-      margin-top: 4px;
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-    .slider-label {
-      font-size: 13px;
-      color: #c9cdd6;
-      min-width: 120px;
-    }
-    .slider-value {
-      font-size: 13px;
-      color: #e6e6e6;
-      font-weight: 600;
-      min-width: 50px;
-      text-align: right;
-    }
-    .slider-input {
-      flex: 1;
-      height: 6px;
-      border-radius: 3px;
-      background: #2a2f3a;
-      outline: none;
-      -webkit-appearance: none;
-    }
-    .slider-input::-webkit-slider-thumb {
-      -webkit-appearance: none;
-      appearance: none;
-      width: 18px;
-      height: 18px;
-      border-radius: 50%;
-      background: #2ecc71;
-      cursor: pointer;
-    }
-    .slider-input::-moz-range-thumb {
-      width: 18px;
-      height: 18px;
-      border-radius: 50%;
-      background: #2ecc71;
-      cursor: pointer;
-      border: none;
-    }
+    /* Status */
+    .status-line { font-size: 13px; font-weight: 700; }
+    .status-line.moving  { color: #7bd88f; }
+    .status-line.stopped { color: #f0a35a; }
+    .status-line.idle    { color: #666; }
 
-    /* Compact 2-column layout for controls to avoid vertical scrolling */
-    .controls-grid {
-      margin-top: 8px;
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      column-gap: 12px;
-      row-gap: 6px;
-    }
-    .controls-grid .slider-control {
-      margin-top: 0;
-    }
+    /* Toggle switch */
+    .sw-row { display: flex; align-items: center; gap: 5px; }
+    .sw-label { font-size: 10px; color: #999; }
+    .sw { position: relative; display: inline-block; width: 36px; height: 20px; }
+    .sw input { opacity: 0; width: 0; height: 0; }
+    .sw-track { position: absolute; cursor: pointer; inset: 0; background: #444;
+                border-radius: 20px; transition: .15s; }
+    .sw-track:before { content: ""; position: absolute; height: 14px; width: 14px;
+                       left: 3px; bottom: 3px; background: #fff; border-radius: 50%;
+                       transition: .15s; }
+    input:checked + .sw-track { background: #2ecc71; }
+    input:checked + .sw-track:before { transform: translateX(16px); }
+
+    /* Text */
+    .mtext { font-size: 10px; color: #999; white-space: pre-wrap; line-height: 1.4; }
+    .timer-line { font-size: 11px; color: #c9cdd6; font-weight: 600; }
+
+    /* Sliders */
+    .sliders-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 5px 8px; }
+    .sl-row { display: flex; flex-direction: column; gap: 1px; }
+    .sl-lbl { font-size: 10px; color: #888; }
+    .sl-inner { display: flex; align-items: center; gap: 3px; }
+    .sl-inner input[type=range] { flex: 1; height: 4px; border-radius: 2px;
+                                  background: #2a2f3a; -webkit-appearance: none; outline: none; }
+    .sl-inner input[type=range]::-webkit-slider-thumb { -webkit-appearance: none;
+      width: 12px; height: 12px; border-radius: 50%; background: #2ecc71; cursor: pointer; }
+    .sl-inner input[type=range]::-moz-range-thumb { width: 12px; height: 12px;
+      border-radius: 50%; background: #2ecc71; cursor: pointer; border: none; }
+    .sl-val { font-size: 10px; color: #ccc; min-width: 34px; text-align: right; }
+
+    /* Exposure */
+    .exp-row { display: flex; gap: 3px; align-items: center; }
+    .exp-lbl { font-size: 9px; color: #888; min-width: 55px; flex-shrink: 0; }
+    .exp-inp { flex: 1; min-width: 0; background: #0f1115; color: #e6e6e6;
+               border: 1px solid #2a2f3a; border-radius: 3px; padding: 2px 4px; font-size: 10px; }
+
+    /* Camera reorder row */
+    .cam-order-row { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+    .cam-order-lbl { font-size: 9px; color: #666; white-space: nowrap; min-width: 55px; flex-shrink: 0; }
+    .cam-slot { font-size: 9px; color: #9ba8bc; background: #1a1f2a; border: 1px solid #252b38;
+                border-radius: 3px; padding: 2px 5px; min-width: 36px; text-align: center; }
+    .swap-btn { font-size: 10px; color: #555; background: none; border: none;
+                cursor: pointer; padding: 0 1px; line-height: 1; transition: color .12s; }
+    .swap-btn:hover { color: #9ba8bc; }
+
+    /* Stream thumbnail */
+    .stream-thumb { width: 100%; border-radius: 4px; background: #0a0c10;
+                    display: block; max-height: 90px; object-fit: contain; }
+
+    /* Right panel */
+    .right { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+    .line-group { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 4px; }
+    .lg-hdr { flex-shrink: 0; font-size: 10px; font-weight: 700; letter-spacing: 1px;
+              padding: 3px 6px; border-radius: 3px; }
+    .lg-hdr { color: #6b7a94; background: #111520; }
+    .cams-row { flex: 1; min-height: 0; display: flex; gap: 6px; }
+    .cam-cell { flex: 1; min-width: 0; background: #151922; border-radius: 7px;
+                overflow: hidden; display: flex; flex-direction: column; }
+    .cam-cell { border-top: 1px solid #252b38; }
+    .cam-img-wrap { flex: 1; min-height: 0; background: #0a0c10;
+                    display: flex; align-items: center; justify-content: center; overflow: hidden; }
+    .cam-img-wrap img { max-width: 100%; max-height: 100%; object-fit: contain; display: block; }
+    .cam-footer { flex-shrink: 0; padding: 3px 8px; display: flex;
+                  justify-content: space-between; align-items: center; min-height: 20px; }
+    .cam-label { font-size: 10px; color: #777; }
+    .det-text { font-size: 10px; font-weight: 700; }
+    .det-text.ok   { color: #7bd88f; }
+    .det-text.bad  { color: #ff6b6b; }
+    .det-text.idle { color: #555; }
   </style>
 </head>
 <body>
-  <h2>ИИ-Детектор силикагеля (3 камеры)</h2>
-  <div class="top">
-    <div class="card metrics">
-      <div>
-        <button class="btn" id="startBtn" onclick="start()">Start</button>
-        <button class="btn" id="stopBtn" onclick="stop()">Stop</button>
-        <button class="btn" onclick="openHistory()">История дефектов</button>
-        <button class="btn power" onclick="shutdownComputer()">Выключить ПК</button>
-        <button class="btn power cancel" onclick="cancelShutdown()">Отменить выключение</button>
-      </div>
-      <div class="switch-row">
-        <span class="switch-label">Отправлять сигнал на линию</span>
-        <label class="switch">
-          <input type="checkbox" id="signalToggle" onclick="setSignalEnabled(this.checked)">
-          <span class="slider"></span>
-        </label>
-      </div>
-      <div class="status" id="status">Idle</div>
-      <div class="small" id="metrics">--</div>
-      <div class="small" id="inferBreakdown">pre -- ms | inf -- ms | post -- ms</div>
-      <div class="small" id="readyText">--</div>
-      <div class="small" id="systemMsg">--</div>
-      <div id="timerAndDefects" style="margin-top: 6px; font-weight: 600; font-size: 16px; color: #e6e6e6;">--</div>
-      <div class="small" id="defectDir">Путь сохранения дефектов: --</div>
-      <div class="small" id="lastDefects">Последние дефектные кадры: --</div>
 
-      <div class="controls-grid" style="margin-top:12px;">
-        <div class="slider-control">
-          <span class="slider-label">Native YOLO conf:</span>
-          <input type="range" id="yoloConfNativeSlider" class="slider-input" min="0" max="100" value="38"
-                 oninput="updateYoloConfNative(this.value)" />
-          <span class="slider-value" id="yoloConfNativeValue">--</span>
+<div class="hdr">
+  <span class="hdr-title">AI Defect Detector</span>
+  <span class="hdr-line" id="hdrL2">LINE 2: Idle</span>
+  <span class="hdr-line" id="hdrL1">LINE 1: Idle</span>
+  <div class="hdr-sys">
+    <button class="btn" onclick="openHistory()" style="font-size:10px;">History</button>
+    <button class="btn power" onclick="shutdownComputer()" style="font-size:10px;">Shutdown</button>
+    <button class="btn power cancel" onclick="cancelShutdown()" style="font-size:10px;">Cancel</button>
+  </div>
+</div>
+
+<div class="main">
+
+  <!-- Left panel -->
+  <div class="left">
+
+    <!-- LINE 2 control card -->
+    <div class="lcard">
+      <div class="line-title">LINE 2</div>
+      <div class="btn-row">
+        <button class="btn" id="startBtn" onclick="startL2()">Start</button>
+        <button class="btn" id="stopBtn"  onclick="stopL2()">Stop</button>
+      </div>
+      <div class="sw-row">
+        <label class="sw"><input type="checkbox" id="signalToggle" onclick="setSignalEnabled(this.checked)"><span class="sw-track"></span></label>
+        <span class="sw-label">Send signal to line</span>
+      </div>
+      <div class="status-line idle" id="statusL2">Idle</div>
+      <div class="mtext" id="metricsL2">--</div>
+      <div class="mtext" id="inferBreakdown">--</div>
+      <div class="timer-line" id="timerL2">--</div>
+      <div class="mtext" id="systemMsg">--</div>
+      <img class="stream-thumb" id="stream" alt="motion cam">
+      <div class="sliders-grid" style="margin-top:3px;">
+        <div class="sl-row">
+          <span class="sl-lbl">Native YOLO conf</span>
+          <div class="sl-inner">
+            <input type="range" id="yoloConfNativeSlider" min="0" max="100" value="38" oninput="updateYoloConfNative(this.value)">
+            <span class="sl-val" id="yoloConfNativeValue">--</span>
+          </div>
         </div>
-        <div class="slider-control">
-          <span class="slider-label">640 YOLO conf:</span>
-          <input type="range" id="yoloConf640Slider" class="slider-input" min="0" max="100" value="38"
-                 oninput="updateYoloConf640(this.value)" />
-          <span class="slider-value" id="yoloConf640Value">--</span>
+        <div class="sl-row">
+          <span class="sl-lbl">640 YOLO conf</span>
+          <div class="sl-inner">
+            <input type="range" id="yoloConf640Slider" min="0" max="100" value="38" oninput="updateYoloConf640(this.value)">
+            <span class="sl-val" id="yoloConf640Value">--</span>
+          </div>
         </div>
-        <div class="slider-control">
-          <span class="slider-label">640 IoU min:</span>
-          <input type="range" id="iouThreshSlider" class="slider-input" min="0" max="100" value="50"
-                 oninput="updateIouThresh(this.value)" />
-          <span class="slider-value" id="iouThreshValue">0.50</span>
+        <div class="sl-row">
+          <span class="sl-lbl">640 IoU min</span>
+          <div class="sl-inner">
+            <input type="range" id="iouThreshSlider" min="0" max="100" value="50" oninput="updateIouThresh(this.value)">
+            <span class="sl-val" id="iouThreshValue">0.50</span>
+          </div>
         </div>
-        <div class="slider-control">
-          <span class="slider-label">Display Brightness:</span>
-          <input type="range" id="displayGainSlider" class="slider-input" min="50" max="300" value="150"
-                 oninput="updateDisplayBrightness(this.value)" />
-          <span class="slider-value" id="displayGainValue">1.00x</span>
+        <div class="sl-row">
+          <span class="sl-lbl">Brightness</span>
+          <div class="sl-inner">
+            <input type="range" id="displayGainSlider" min="50" max="300" value="150" oninput="updateDisplayBrightness(this.value)">
+            <span class="sl-val" id="displayGainValue">1.00x</span>
+          </div>
         </div>
-        <div style="display:flex; flex-direction:row; gap:8px; align-items:center;">
-          <span style="font-size:13px; color:#c9cdd6; min-width:100px;">Exposure (µs):</span>
-          <input type="number" id="expCam0" min="50" max="1000000" step="10" placeholder="Cam 11" style="flex:1; min-width:90px; background:#0f1115; color:#e6e6e6; border-radius:4px; border:1px solid #2a2f3a; padding:4px 8px; font-size:13px;" />
-          <input type="number" id="expCam1" min="50" max="1000000" step="10" placeholder="Cam 13" style="flex:1; min-width:90px; background:#0f1115; color:#e6e6e6; border-radius:4px; border:1px solid #2a2f3a; padding:4px 8px; font-size:13px;" />
-          <input type="number" id="expCam2" min="50" max="1000000" step="10" placeholder="Cam 12" style="flex:1; min-width:90px; background:#0f1115; color:#e6e6e6; border-radius:4px; border:1px solid #2a2f3a; padding:4px 8px; font-size:13px;" />
+        <div class="sl-row">
+          <span class="sl-lbl">Y640 trigger</span>
+          <div class="sl-inner">
+            <input type="range" id="clfConfTriggerSlider" min="0" max="100" value="55" oninput="updateClfConfTrigger(this.value)">
+            <span class="sl-val" id="clfConfTriggerValue">0.55</span>
+          </div>
         </div>
-        <div class="slider-control">
-          <span class="slider-label">Y640 trigger:</span>
-          <input type="range" id="clfConfTriggerSlider" class="slider-input" min="0" max="100" value="55"
-                 oninput="updateClfConfTrigger(this.value)" />
-          <span class="slider-value" id="clfConfTriggerValue">0.55</span>
-        </div>
-        <div class="slider-control">
-          <span class="slider-label">CLF threshold:</span>
-          <input type="range" id="clfThreshSlider" class="slider-input" min="0" max="100" value="80"
-                 oninput="updateClfThresh(this.value)" />
-          <span class="slider-value" id="clfThreshValue">0.80</span>
+        <div class="sl-row">
+          <span class="sl-lbl">CLF threshold</span>
+          <div class="sl-inner">
+            <input type="range" id="clfThreshSlider" min="0" max="100" value="80" oninput="updateClfThresh(this.value)">
+            <span class="sl-val" id="clfThreshValue">0.80</span>
+          </div>
         </div>
       </div>
+      <div class="exp-row" style="margin-top:3px;">
+        <span class="exp-lbl">Exposure (us)</span>
+        <input type="number" id="expCam0" min="50" max="1000000" step="10" placeholder="Cam 11" class="exp-inp">
+        <input type="number" id="expCam1" min="50" max="1000000" step="10" placeholder="Cam 13" class="exp-inp">
+        <input type="number" id="expCam2" min="50" max="1000000" step="10" placeholder="Cam 12" class="exp-inp">
+      </div>
+      <div class="cam-order-row" style="margin-top:3px;">
+        <span class="cam-order-lbl">Cam slots</span>
+        <span class="cam-slot" id="l2s0">--</span>
+        <button class="swap-btn" onclick="swapCams(2,0,1)" title="Swap slots 1&amp;2">&#8644;</button>
+        <span class="cam-slot" id="l2s1">--</span>
+        <button class="swap-btn" onclick="swapCams(2,1,2)" title="Swap slots 2&amp;3">&#8644;</button>
+        <span class="cam-slot" id="l2s2">--</span>
+      </div>
     </div>
-    <div class="card motion-card">
-      <div class="small">Motion Camera (low-res stream)</div>
-      <img id="stream" />
+
+    <!-- LINE 1 control card -->
+    <div class="lcard">
+      <div class="line-title">LINE 1 <span style="font-size:9px;color:#555;font-weight:400;">(not connected)</span></div>
+      <div class="btn-row">
+        <button class="btn" id="startBtnL1" onclick="startL1()">Start</button>
+        <button class="btn" id="stopBtnL1"  onclick="stopL1()">Stop</button>
+      </div>
+      <div class="sw-row">
+        <label class="sw"><input type="checkbox" id="signalToggleL1" onclick="setSignalEnabledL1(this.checked)"><span class="sw-track"></span></label>
+        <span class="sw-label">Send signal to line</span>
+      </div>
+      <div class="status-line idle" id="statusL1">Idle</div>
+      <div class="timer-line" id="timerL1">--</div>
+      <div class="mtext" style="color:#3a4a5a;margin-top:2px;">Cameras: placeholder - IPs not set</div>
+      <div class="mtext" style="color:#3a4a5a;">Relay signal: placeholder - register not set</div>
+      <div class="cam-order-row" style="margin-top:3px;">
+        <span class="cam-order-lbl">Cam slots</span>
+        <span class="cam-slot" id="l1s0">4</span>
+        <button class="swap-btn" onclick="swapCams(1,0,1)" title="Swap slots 1&amp;2">&#8644;</button>
+        <span class="cam-slot" id="l1s1">5</span>
+        <button class="swap-btn" onclick="swapCams(1,1,2)" title="Swap slots 2&amp;3">&#8644;</button>
+        <span class="cam-slot" id="l1s2">6</span>
+      </div>
     </div>
+
   </div>
 
-  <h3>Результат проверки</h3>
-  <div class="status" id="inferTime">Last inference: -- ms</div>
-  <div class="row">
-    <div class="card">
-      <div class="small" id="label0">Cam --</div>
-      <div class="det" id="det0">--</div>
-      <img id="cam0"/>
+  <!-- Right panel (6 cameras) -->
+  <div class="right">
+
+    <div class="line-group">
+      <div class="lg-hdr">LINE 2 &mdash; Cameras 1 &middot; 2 &middot; 3</div>
+      <div class="cams-row">
+        <div class="cam-cell">
+          <div class="cam-img-wrap"><img id="cam0" alt=""></div>
+          <div class="cam-footer">
+            <span class="cam-label" id="label0">Cam --</span>
+            <span class="det-text idle" id="det0">--</span>
+          </div>
+        </div>
+        <div class="cam-cell">
+          <div class="cam-img-wrap"><img id="cam1" alt=""></div>
+          <div class="cam-footer">
+            <span class="cam-label" id="label1">Cam --</span>
+            <span class="det-text idle" id="det1">--</span>
+          </div>
+        </div>
+        <div class="cam-cell">
+          <div class="cam-img-wrap"><img id="cam2" alt=""></div>
+          <div class="cam-footer">
+            <span class="cam-label" id="label2">Cam --</span>
+            <span class="det-text idle" id="det2">--</span>
+          </div>
+        </div>
+      </div>
     </div>
-    <div class="card">
-      <div class="small" id="label1">Cam --</div>
-      <div class="det" id="det1">--</div>
-      <img id="cam1"/>
+
+    <div class="line-group">
+      <div class="lg-hdr">LINE 1 &mdash; Cameras 4 &middot; 5 &middot; 6</div>
+      <div class="cams-row">
+        <div class="cam-cell">
+          <div class="cam-img-wrap"><img id="cam3" alt=""></div>
+          <div class="cam-footer">
+            <span class="cam-label" id="label3">Cam 4</span>
+            <span class="det-text idle" id="det3">--</span>
+          </div>
+        </div>
+        <div class="cam-cell">
+          <div class="cam-img-wrap"><img id="cam4" alt=""></div>
+          <div class="cam-footer">
+            <span class="cam-label" id="label4">Cam 5</span>
+            <span class="det-text idle" id="det4">--</span>
+          </div>
+        </div>
+        <div class="cam-cell">
+          <div class="cam-img-wrap"><img id="cam5" alt=""></div>
+          <div class="cam-footer">
+            <span class="cam-label" id="label5">Cam 6</span>
+            <span class="det-text idle" id="det5">--</span>
+          </div>
+        </div>
+      </div>
     </div>
-    <div class="card">
-      <div class="small" id="label2">Cam --</div>
-      <div class="det" id="det2">--</div>
-      <img id="cam2"/>
-    </div>
+
   </div>
+</div>
 
 <script>
-let running = false;
+let running = false, _l1Running = false;
 let _lastResultId = null;
-let _streamBusy = false;  // prevent stream request pileup
-let _loadingResults = false; // pause stream while loading result JPEGs
-let _lastStreamMs = 0;
-const STREAM_INTERVAL_MS = 120; // client-side throttle for /stream
-let _signalEnabled = true;
-let _displaySettings = { gain: 1.0, bias: 0.0, gamma: 1.0 };
+let _streamBusy = false, _loadingResults = false, _lastStreamMs = 0;
+const STREAM_INTERVAL_MS = 120;
+let _signalEnabled = true, _signalEnabledL1 = true;
+let _l2CamOrder = [0, 2, 1];  // display slot -> data index (default: cam11, cam13, cam12)
+let _l1CamOrder = [0, 1, 2];  // placeholder
+let _l2IpsList = [];          // cached IP list for label updates
 
-function start() {
-  setRunButtons(true);
-  fetch('/start').then(() => { running = true; poll(); }).catch(() => { setRunButtons(false); });
+function fetchTimeout(url, ms) {
+  const c = new AbortController(), t = setTimeout(() => c.abort(), ms);
+  return fetch(url, { signal: c.signal }).finally(() => clearTimeout(t));
 }
-function stop() {
+
+// LINE 2
+function startL2() {
+  setRunButtons(true);
+  fetch('/start').then(() => { running = true; poll(); }).catch(() => setRunButtons(false));
+}
+function stopL2() {
   setRunButtons(false);
   fetch('/stop').then(() => { running = false; }).catch(() => {});
 }
+function start() { startL2(); }
+function stop()  { stopL2(); }
 
-function openHistory() {
-  window.open('/history', '_blank');
+function swapCams(line, slotA, slotB) {
+  const arr = line === 2 ? _l2CamOrder : _l1CamOrder;
+  const tmp = arr[slotA]; arr[slotA] = arr[slotB]; arr[slotB] = tmp;
+  updateCamOrderUI();
+  // force result reload on next poll tick
+  if (line === 2) _lastResultId = null;
 }
 
-async function shutdownComputer() {
-  const ok = confirm('Вы уверены, что хотите выключить компьютер через 15 секунд?');
-  if (!ok) return;
-  try {
-    const r = await fetch('/system/shutdown?confirm=1&delay_sec=15', { method: 'POST' });
-    const j = await r.json();
-    const el = document.getElementById('systemMsg');
-    if (el) {
-      el.textContent = j && j.ok ? 'Команда на выключение отправлена (15 секунд).' : 'Не удалось отправить команду выключения.';
-    }
-  } catch (e) {
-    const el = document.getElementById('systemMsg');
-    if (el) el.textContent = 'Ошибка отправки команды выключения.';
+function updateCamOrderUI() {
+  // Line 2 slot labels
+  if (_l2IpsList.length === 3) {
+    ['l2s0','l2s1','l2s2'].forEach((id, i) => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = _l2IpsList[_l2CamOrder[i]];
+    });
+    // also update footer labels
+    ['label0','label1','label2'].forEach((id, i) => {
+      const el = document.getElementById(id);
+      if (el) el.textContent = 'Cam ' + _l2IpsList[_l2CamOrder[i]];
+    });
   }
+  // Line 1 slot labels (placeholder numbers)
+  const l1Labels = ['4','5','6'];
+  ['l1s0','l1s1','l1s2'].forEach((id, i) => {
+    const el = document.getElementById(id);
+    if (el) el.textContent = l1Labels[_l1CamOrder[i]];
+  });
 }
 
-async function cancelShutdown() {
-  try {
-    const r = await fetch('/system/shutdown-cancel', { method: 'POST' });
-    const j = await r.json();
-    const el = document.getElementById('systemMsg');
-    if (el) {
-      el.textContent = j && j.ok ? 'Выключение отменено.' : 'Не удалось отменить выключение.';
-    }
-  } catch (e) {
-    const el = document.getElementById('systemMsg');
-    if (el) el.textContent = 'Ошибка отмены выключения.';
-  }
-}
-
-function setRunButtons(isRunning) {
-  const startBtn = document.getElementById('startBtn');
-  const stopBtn = document.getElementById('stopBtn');
-  if (!startBtn || !stopBtn) return;
-  startBtn.classList.toggle('active-start', !!isRunning);
-  stopBtn.classList.toggle('active-stop', !isRunning);
+function setRunButtons(on) {
+  const s = document.getElementById('startBtn'), t = document.getElementById('stopBtn');
+  if (s) s.classList.toggle('active-start', !!on);
+  if (t) t.classList.toggle('active-stop', !on);
 }
 
 async function refreshSignalState() {
   try {
-    const r = await fetch('/signal');
-    const s = await r.json();
+    const r = await fetch('/signal'); const s = await r.json();
     _signalEnabled = !!s.enabled;
-    const el = document.getElementById('signalToggle');
-    if (el) el.checked = _signalEnabled;
-  } catch (e) {
-    // ignore
-  }
+    const el = document.getElementById('signalToggle'); if (el) el.checked = _signalEnabled;
+  } catch(e) {}
 }
-
-async function setSignalEnabled(value) {
-  _signalEnabled = !!value;
-  const el = document.getElementById('signalToggle');
-  if (el) el.checked = _signalEnabled;
-  try {
-    await fetch('/signal?enabled=' + (_signalEnabled ? 1 : 0), { method: 'POST' });
-  } catch (e) {
-    // ignore
-  }
-}
-
-// Fetch with timeout (prevents hang if server is busy)
-function fetchTimeout(url, ms) {
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), ms);
-  return fetch(url, { signal: ctrl.signal }).finally(() => clearTimeout(timer));
+async function setSignalEnabled(v) {
+  _signalEnabled = !!v;
+  const el = document.getElementById('signalToggle'); if (el) el.checked = _signalEnabled;
+  try { await fetch('/signal?enabled=' + (_signalEnabled ? 1 : 0), { method: 'POST' }); } catch(e) {}
 }
 
 async function poll() {
   while (running) {
     try {
-      const r = await fetchTimeout('/status', 2000);  // 2s timeout
+      const r = await fetchTimeout('/status', 2000);
       const s = await r.json();
-      if (!s.running) {
-        if (!s.maintenance_refreshing) {
-          running = false;
-          setRunButtons(false);
-          break;
-        }
-      }
+      if (!s.running && !s.maintenance_refreshing) { running = false; setRunButtons(false); break; }
       setRunButtons(true);
 
-      const st = document.getElementById('status');
       const state = (s.state || 'moving').toLowerCase();
-      st.textContent = state === 'stopped' ? 'STOPPED' : 'MOVING';
-      st.className = 'status ' + (state === 'stopped' ? 'stopped' : 'moving');
+      const stEl = document.getElementById('statusL2');
+      stEl.textContent = state === 'stopped' ? 'STOPPED' : 'MOVING';
+      stEl.className = 'status-line ' + (state === 'stopped' ? 'stopped' : 'moving');
+      document.getElementById('hdrL2').textContent = 'LINE 2: ' + (state === 'stopped' ? 'STOPPED' : 'MOVING');
 
-      const fmt = (v) => (v == null) ? '--' : Number(v).toFixed(1);
-      document.getElementById('metrics').textContent =
-        'inf=' + fmt(s.infer_ms) + ' ms | cap=' + fmt(s.capture_ms) + ' ms | total=' + fmt(s.total_ms) +
-        ' | speed=' + fmt(s.speed);
+      const fmt = v => v == null ? '--' : Number(v).toFixed(1);
+      document.getElementById('metricsL2').textContent =
+        'inf=' + fmt(s.infer_ms) + 'ms  cap=' + fmt(s.capture_ms) + 'ms  spd=' + fmt(s.speed);
       document.getElementById('inferBreakdown').textContent = s.speed_str || '--';
-      document.getElementById('readyText').textContent = s.ready_text || '--';
-      const defectDirEl = document.getElementById('defectDir');
-      const lastDefEl = document.getElementById('lastDefects');
-      if (defectDirEl) {
-        defectDirEl.textContent = 'Путь сохранения дефектов: ' + (s.defect_frame_dir || '--');
-      }
-      if (lastDefEl) {
-        const paths = Array.isArray(s.last_defect_paths) ? s.last_defect_paths : [];
-        const short = paths.slice(-3).map(p => {
-          try {
-            const parts = p.split(/[/\\\\]/);
-            return parts[parts.length - 1] || p;
-          } catch (e) {
-            return p;
-          }
-        });
-        lastDefEl.textContent = 'Последние дефектные кадры: ' + (short.length ? short.join(', ') : '--');
-      }
-      const systemMsgEl = document.getElementById('systemMsg');
-      if (systemMsgEl) {
-        const maintMsg = (s.maintenance_msg || '').toString().trim();
-        if (maintMsg) {
-          systemMsgEl.textContent = maintMsg;
-        } else if (systemMsgEl.textContent && systemMsgEl.textContent.includes('автообновление')) {
-          systemMsgEl.textContent = '--';
-        }
-      }
-      
-      // Display timer and defect count (always white)
-      const timerDefectsEl = document.getElementById('timerAndDefects');
-      if (timerDefectsEl && s.running) {
-        const runtime = s.runtime_str || '00:00:00';
-        const defects = s.defect_count != null ? s.defect_count : 0;
-        timerDefectsEl.textContent = `Время работы: ${runtime} | Найдено дефектов: ${defects}`;
-      } else if (timerDefectsEl) {
-        timerDefectsEl.textContent = 'Время работы: 00:00:00 | Найдено дефектов: 0';
-      }
-      
-      // Update slider values from server (if changed externally)
-      if (s.yolo_conf_native != null) {
-        const yoloSlider = document.getElementById('yoloConfNativeSlider');
-        const yoloValue = document.getElementById('yoloConfNativeValue');
-        if (yoloSlider && yoloValue) {
-          const sliderVal = Math.round(s.yolo_conf_native * 100);
-          if (parseInt(yoloSlider.value) !== sliderVal) {
-            yoloSlider.value = sliderVal;
-            yoloValue.textContent = s.yolo_conf_native.toFixed(2);
-          }
-        }
-      }
-      if (s.yolo_conf_640 != null) {
-        const yoloSlider = document.getElementById('yoloConf640Slider');
-        const yoloValue = document.getElementById('yoloConf640Value');
-        if (yoloSlider && yoloValue) {
-          const sliderVal = Math.round(s.yolo_conf_640 * 100);
-          if (parseInt(yoloSlider.value) !== sliderVal) {
-            yoloSlider.value = sliderVal;
-            yoloValue.textContent = s.yolo_conf_640.toFixed(2);
-          }
-        }
-      }
-      if (s.iou_thresh != null) {
-        const el = document.getElementById('iouThreshSlider');
-        const val = document.getElementById('iouThreshValue');
-        if (el && val) {
-          const sliderVal = Math.round(s.iou_thresh * 100);
-          if (parseInt(el.value) !== sliderVal) { el.value = sliderVal; val.textContent = s.iou_thresh.toFixed(2); }
-        }
-      }
-      if (s.clf_enabled != null) {
-        const el = document.getElementById('clfEnableToggle');
-        if (el) el.checked = !!s.clf_enabled;
-      }
-      if (s.clf_conf_trigger != null) {
-        const el = document.getElementById('clfConfTriggerSlider');
-        const val = document.getElementById('clfConfTriggerValue');
-        if (el && val) {
-          const sliderVal = Math.round(s.clf_conf_trigger * 100);
-          if (parseInt(el.value) !== sliderVal) { el.value = sliderVal; val.textContent = s.clf_conf_trigger.toFixed(2); }
-        }
-      }
-      if (s.clf_thresh != null) {
-        const el = document.getElementById('clfThreshSlider');
-        const val = document.getElementById('clfThreshValue');
-        if (el && val) {
-          const sliderVal = Math.round(s.clf_thresh * 100);
-          if (parseInt(el.value) !== sliderVal) { el.value = sliderVal; val.textContent = s.clf_thresh.toFixed(2); }
-        }
-      }
-
-      // Update exposure fields if available
-      if (Array.isArray(s.exposure_us) && s.exposure_us.length >= 3) {
-        const ids = ['expCam0', 'expCam1', 'expCam2'];
-        const order = [0, 2, 1];  // UI order: 11, 13, 12
-        for (let i = 0; i < 3; i++) {
-          const el = document.getElementById(ids[i]);
-          if (el && !el.matches(':focus')) {
-            el.value = Math.round(s.exposure_us[order[i]]);
-          }
-        }
+      const maintMsg = (s.maintenance_msg || '').trim();
+      if (maintMsg) document.getElementById('systemMsg').textContent = maintMsg;
+      if (s.running) {
+        document.getElementById('timerL2').textContent =
+          (s.runtime_str || '00:00:00') + ' | Defects: ' + (s.defect_count || 0);
       }
 
       if (Array.isArray(s.ips_list) && s.ips_list.length === 3) {
-        const order = [0, 2, 1];  // display cams: 11, 13, 12
-        document.getElementById('label0').textContent = 'Cam ' + s.ips_list[order[0]];
-        document.getElementById('label1').textContent = 'Cam ' + s.ips_list[order[1]];
-        document.getElementById('label2').textContent = 'Cam ' + s.ips_list[order[2]];
+        _l2IpsList = s.ips_list;
+        updateCamOrderUI();
       }
 
       if (Array.isArray(s.detected) && s.detected.length === 3) {
         const setDet = (id, v) => {
           const el = document.getElementById(id);
-          if (s.infer_busy) {
-            // New inference running: clear previous text until new result arrives
-            el.textContent = '\u00A0'; // keep layout stable
-            el.className = 'det';
-            return;
-          }
-          const val = (v || '').toString().trim().toLowerCase();
-          if (!val || val === 'none' || val === '--') {
-            el.textContent = 'нет дефектов!';
-            el.className = 'det ok';
-          } else {
-            el.textContent = 'дефект обнаружен: ' + v;
-            el.className = 'det bad';
-          }
+          if (s.infer_busy) { el.textContent = ' '; el.className = 'det-text'; return; }
+          const val = (v || '').trim().toLowerCase();
+          if (!val || val === 'none' || val === '--') { el.textContent = 'OK'; el.className = 'det-text ok'; }
+          else { el.textContent = 'DEFECT: ' + v; el.className = 'det-text bad'; }
         };
-        const order = [0, 2, 1];
-        setDet('det0', s.detected[order[0]]);
-        setDet('det1', s.detected[order[1]]);
-        setDet('det2', s.detected[order[2]]);
+        setDet('det0', s.detected[_l2CamOrder[0]]);
+        setDet('det1', s.detected[_l2CamOrder[1]]);
+        setDet('det2', s.detected[_l2CamOrder[2]]);
       }
 
-      // Load result images when new result_id appears
+      const syncSl = (slId, valId, sv) => {
+        if (sv == null) return;
+        const e = document.getElementById(slId), v = document.getElementById(valId);
+        if (!e || !v) return;
+        const n = Math.round(sv * 100);
+        if (parseInt(e.value) !== n) { e.value = n; v.textContent = sv.toFixed(2); }
+      };
+      syncSl('yoloConfNativeSlider', 'yoloConfNativeValue', s.yolo_conf_native);
+      syncSl('yoloConf640Slider',    'yoloConf640Value',    s.yolo_conf_640);
+      syncSl('iouThreshSlider',      'iouThreshValue',      s.iou_thresh);
+      syncSl('clfConfTriggerSlider', 'clfConfTriggerValue', s.clf_conf_trigger);
+      syncSl('clfThreshSlider',      'clfThreshValue',      s.clf_thresh);
+
+      if (Array.isArray(s.exposure_us) && s.exposure_us.length >= 3) {
+        const ids = ['expCam0','expCam1','expCam2'];
+        for (let i = 0; i < 3; i++) {
+          const el = document.getElementById(ids[i]);
+          if (el && !el.matches(':focus')) el.value = Math.round(s.exposure_us[_l2CamOrder[i]]);
+        }
+      }
+
       if (s.has_results && s.result_id !== _lastResultId) {
         _lastResultId = s.result_id;
-        const fetchStart = performance.now();
         const ts = Date.now();
-        const serverAge = s.server_ts && s.result_ready_ts
-          ? ((s.server_ts - s.result_ready_ts) * 1000).toFixed(0)
-          : '?';
-
-        const img0 = document.getElementById('cam0');
-        const img1 = document.getElementById('cam1');
-        const img2 = document.getElementById('cam2');
-        const order = [0, 2, 1];  // indices in result array
         _loadingResults = true;
-
-        const loadImg = (el, url) => new Promise((resolve) => {
-          el.onload = el.onerror = () => resolve();
-          el.src = url;
-        });
-
-        // Load all 3 result images IN PARALLEL (much faster than sequential)
+        const loadImg = (el, url) => new Promise(res => { el.onload = el.onerror = () => res(); el.src = url; });
         await Promise.all([
-          loadImg(img0, '/result/' + order[0] + '?ts=' + ts),
-          loadImg(img1, '/result/' + order[1] + '?ts=' + ts),
-          loadImg(img2, '/result/' + order[2] + '?ts=' + ts),
+          loadImg(document.getElementById('cam0'), '/result/' + _l2CamOrder[0] + '?ts=' + ts),
+          loadImg(document.getElementById('cam1'), '/result/' + _l2CamOrder[1] + '?ts=' + ts),
+          loadImg(document.getElementById('cam2'), '/result/' + _l2CamOrder[2] + '?ts=' + ts),
         ]);
-
         _loadingResults = false;
-        const displayMs = (performance.now() - fetchStart).toFixed(0);
-        document.getElementById('inferTime').textContent =
-          'GPU: ' + fmt(s.infer_ms) + 'ms | server->poll: ' + serverAge +
-          'ms | poll->display: ' + displayMs + 'ms';
       }
 
-      // Stream: only request if previous load finished (no pileup)
       const nowMs = Date.now();
       if (!_streamBusy && !_loadingResults && (nowMs - _lastStreamMs) >= STREAM_INTERVAL_MS) {
-        _streamBusy = true;
-        _lastStreamMs = nowMs;
-        const streamImg = document.getElementById('stream');
-        streamImg.onload = streamImg.onerror = () => { _streamBusy = false; };
-        streamImg.src = '/stream?ts=' + nowMs;
+        _streamBusy = true; _lastStreamMs = nowMs;
+        const si = document.getElementById('stream');
+        si.onload = si.onerror = () => { _streamBusy = false; };
+        si.src = '/stream?ts=' + nowMs;
       }
-
-    } catch(e) {
-      // fetch timed out or failed -- just retry next cycle
-    }
-    await new Promise(r => setTimeout(r, 100)); // ~10 FPS poll (reduces double-requests)
+    } catch(e) {}
+    await new Promise(r => setTimeout(r, 100));
   }
 }
 
-// Threshold update functions
-let _thresholdUpdateDebounce = null;
-function updateYoloConfNative(value) {
-  const numVal = parseInt(value) / 100.0;
-  const valueEl = document.getElementById('yoloConfNativeValue');
-  if (valueEl) valueEl.textContent = numVal.toFixed(2);
-  
-  // Debounce updates to avoid too many requests
-  if (_thresholdUpdateDebounce) clearTimeout(_thresholdUpdateDebounce);
-  _thresholdUpdateDebounce = setTimeout(() => {
-    fetch('/thresholds?yolo_conf_native=' + numVal, { method: 'POST' }).catch(() => {});
-  }, 100);
+// LINE 1
+function startL1() {
+  setRunButtonsL1(true);
+  fetch('/l1/start').then(() => { _l1Running = true; pollL1(); }).catch(() => setRunButtonsL1(false));
+}
+function stopL1() {
+  setRunButtonsL1(false);
+  fetch('/l1/stop').then(() => { _l1Running = false; }).catch(() => {});
+}
+function setRunButtonsL1(on) {
+  const s = document.getElementById('startBtnL1'), t = document.getElementById('stopBtnL1');
+  if (s) s.classList.toggle('active-start', !!on);
+  if (t) t.classList.toggle('active-stop', !on);
 }
 
-function updateYoloConf640(value) {
-  const numVal = parseInt(value) / 100.0;
-  const valueEl = document.getElementById('yoloConf640Value');
-  if (valueEl) valueEl.textContent = numVal.toFixed(2);
-  
-  // Debounce updates to avoid too many requests
-  if (_thresholdUpdateDebounce) clearTimeout(_thresholdUpdateDebounce);
-  _thresholdUpdateDebounce = setTimeout(() => {
-    fetch('/thresholds?yolo_conf_640=' + numVal, { method: 'POST' }).catch(() => {});
-  }, 100);
+async function refreshSignalStateL1() {
+  try {
+    const r = await fetch('/l1/signal'); const s = await r.json();
+    _signalEnabledL1 = !!s.enabled;
+    const el = document.getElementById('signalToggleL1'); if (el) el.checked = _signalEnabledL1;
+  } catch(e) {}
+}
+async function setSignalEnabledL1(v) {
+  _signalEnabledL1 = !!v;
+  const el = document.getElementById('signalToggleL1'); if (el) el.checked = _signalEnabledL1;
+  try { await fetch('/l1/signal?enabled=' + (_signalEnabledL1 ? 1 : 0), { method: 'POST' }); } catch(e) {}
 }
 
-function updateIouThresh(value) {
-  const numVal = parseInt(value) / 100.0;
-  const valueEl = document.getElementById('iouThreshValue');
-  if (valueEl) valueEl.textContent = numVal.toFixed(2);
-  if (_thresholdUpdateDebounce) clearTimeout(_thresholdUpdateDebounce);
-  _thresholdUpdateDebounce = setTimeout(() => {
-    fetch('/thresholds?iou_thresh=' + numVal, { method: 'POST' }).catch(() => {});
-  }, 100);
+let _l1PlaceholderLoaded = false;
+async function pollL1() {
+  while (_l1Running) {
+    try {
+      const r = await fetchTimeout('/l1/status', 2000);
+      const s = await r.json();
+      if (!s.running) {
+        _l1Running = false; setRunButtonsL1(false);
+        document.getElementById('statusL1').textContent = 'Idle';
+        document.getElementById('statusL1').className = 'status-line idle';
+        document.getElementById('hdrL1').textContent = 'LINE 1: Idle';
+        break;
+      }
+      document.getElementById('statusL1').textContent = 'Running';
+      document.getElementById('statusL1').className = 'status-line moving';
+      document.getElementById('hdrL1').textContent = 'LINE 1: Running';
+      if (s.runtime_str) document.getElementById('timerL1').textContent = s.runtime_str + ' | Defects: 0';
+
+      if (!_l1PlaceholderLoaded) {
+        _l1PlaceholderLoaded = true;
+        const ts = Date.now();
+        const loadImg = (el, url) => new Promise(res => { el.onload = el.onerror = () => res(); el.src = url; });
+        await Promise.all([
+          loadImg(document.getElementById('cam3'), '/l1/result/0?ts=' + ts),
+          loadImg(document.getElementById('cam4'), '/l1/result/1?ts=' + ts),
+          loadImg(document.getElementById('cam5'), '/l1/result/2?ts=' + ts),
+        ]);
+      }
+    } catch(e) {}
+    await new Promise(r => setTimeout(r, 500));
+  }
 }
 
-function setClfEnabled(value) {
-  fetch('/classifier?enabled=' + (value ? 1 : 0), { method: 'POST' }).catch(() => {});
+// Controls
+let _threshDebounce = null, _displayDebounce = null;
+function updateYoloConfNative(v) {
+  const n = parseInt(v)/100; document.getElementById('yoloConfNativeValue').textContent = n.toFixed(2);
+  if (_threshDebounce) clearTimeout(_threshDebounce);
+  _threshDebounce = setTimeout(() => fetch('/thresholds?yolo_conf_native='+n,{method:'POST'}).catch(()=>{}), 100);
 }
-
-function updateClfConfTrigger(value) {
-  const numVal = parseInt(value) / 100.0;
-  const valueEl = document.getElementById('clfConfTriggerValue');
-  if (valueEl) valueEl.textContent = numVal.toFixed(2);
-  if (_thresholdUpdateDebounce) clearTimeout(_thresholdUpdateDebounce);
-  _thresholdUpdateDebounce = setTimeout(() => {
-    fetch('/classifier?conf_trigger=' + numVal, { method: 'POST' }).catch(() => {});
-  }, 100);
+function updateYoloConf640(v) {
+  const n = parseInt(v)/100; document.getElementById('yoloConf640Value').textContent = n.toFixed(2);
+  if (_threshDebounce) clearTimeout(_threshDebounce);
+  _threshDebounce = setTimeout(() => fetch('/thresholds?yolo_conf_640='+n,{method:'POST'}).catch(()=>{}), 100);
 }
-
-function updateClfThresh(value) {
-  const numVal = parseInt(value) / 100.0;
-  const valueEl = document.getElementById('clfThreshValue');
-  if (valueEl) valueEl.textContent = numVal.toFixed(2);
-  if (_thresholdUpdateDebounce) clearTimeout(_thresholdUpdateDebounce);
-  _thresholdUpdateDebounce = setTimeout(() => {
-    fetch('/classifier?thresh=' + numVal, { method: 'POST' }).catch(() => {});
-  }, 100);
+function updateIouThresh(v) {
+  const n = parseInt(v)/100; document.getElementById('iouThreshValue').textContent = n.toFixed(2);
+  if (_threshDebounce) clearTimeout(_threshDebounce);
+  _threshDebounce = setTimeout(() => fetch('/thresholds?iou_thresh='+n,{method:'POST'}).catch(()=>{}), 100);
 }
-
-// Display brightness update (gain slider -> 0.5x..3.0x)
-let _displayUpdateDebounce = null;
-function updateDisplayBrightness(value) {
-  const gain = parseInt(value) / 100.0;
-  const valueEl = document.getElementById('displayGainValue');
-  if (valueEl) valueEl.textContent = gain.toFixed(2) + 'x';
-  _displaySettings.gain = gain;
-  if (_displayUpdateDebounce) clearTimeout(_displayUpdateDebounce);
-  _displayUpdateDebounce = setTimeout(() => {
-    fetch('/display?gain=' + gain, { method: 'POST' }).catch(() => {});
-  }, 120);
+function updateClfConfTrigger(v) {
+  const n = parseInt(v)/100; document.getElementById('clfConfTriggerValue').textContent = n.toFixed(2);
+  if (_threshDebounce) clearTimeout(_threshDebounce);
+  _threshDebounce = setTimeout(() => fetch('/classifier?conf_trigger='+n,{method:'POST'}).catch(()=>{}), 100);
 }
-
+function updateClfThresh(v) {
+  const n = parseInt(v)/100; document.getElementById('clfThreshValue').textContent = n.toFixed(2);
+  if (_threshDebounce) clearTimeout(_threshDebounce);
+  _threshDebounce = setTimeout(() => fetch('/classifier?thresh='+n,{method:'POST'}).catch(()=>{}), 100);
+}
+function updateDisplayBrightness(v) {
+  const gain = parseInt(v)/100; document.getElementById('displayGainValue').textContent = gain.toFixed(2)+'x';
+  if (_displayDebounce) clearTimeout(_displayDebounce);
+  _displayDebounce = setTimeout(() => fetch('/display?gain='+gain,{method:'POST'}).catch(()=>{}), 120);
+}
 function attachExposureHandlers() {
-  const ids = ['expCam0', 'expCam1', 'expCam2'];
-  ids.forEach((id, idx) => {
-    const el = document.getElementById(id);
-    if (!el) return;
+  ['expCam0','expCam1','expCam2'].forEach((id, idx) => {
+    const el = document.getElementById(id); if (!el) return;
     el.addEventListener('change', () => {
-      const v = parseFloat(el.value);
-      if (!isFinite(v)) return;
-      fetch('/exposure?cam_index=' + idx + '&exposure_us=' + v, { method: 'POST' })
-        .catch(() => {});
+      const v = parseFloat(el.value); if (!isFinite(v)) return;
+      fetch('/exposure?cam_index='+idx+'&exposure_us='+v,{method:'POST'}).catch(()=>{});
     });
   });
 }
 
-// Auto-start on page load and sync signal toggle state
+function openHistory() { window.open('/history','_blank'); }
+async function shutdownComputer() {
+  if (!confirm('Shutdown computer in 15 seconds?')) return;
+  try {
+    const r = await fetch('/system/shutdown?confirm=1&delay_sec=15',{method:'POST'});
+    const j = await r.json();
+    document.getElementById('systemMsg').textContent = j.ok ? 'Shutdown sent (15s).' : 'Shutdown failed.';
+  } catch(e) { document.getElementById('systemMsg').textContent = 'Shutdown error.'; }
+}
+async function cancelShutdown() {
+  try {
+    const r = await fetch('/system/shutdown-cancel',{method:'POST'});
+    const j = await r.json();
+    document.getElementById('systemMsg').textContent = j.ok ? 'Shutdown cancelled.' : 'Cancel failed.';
+  } catch(e) { document.getElementById('systemMsg').textContent = 'Cancel error.'; }
+}
+
 window.addEventListener('load', () => {
-  setRunButtons(false);
-  refreshSignalState();
-  // Initialize slider and display values from server
-  fetch('/thresholds').then(r => r.json()).then(t => {
-    const yoloNativeSlider = document.getElementById('yoloConfNativeSlider');
-    const yoloNativeValue = document.getElementById('yoloConfNativeValue');
-    if (yoloNativeSlider && yoloNativeValue && t.yolo_conf_native != null) {
-      yoloNativeSlider.value = Math.round(t.yolo_conf_native * 100);
-      yoloNativeValue.textContent = t.yolo_conf_native.toFixed(2);
+  setRunButtons(false); setRunButtonsL1(false);
+  refreshSignalState(); refreshSignalStateL1();
+
+  fetch('/thresholds').then(r=>r.json()).then(t => {
+    const set = (slId, valId, v) => {
+      if (v == null) return;
+      const e = document.getElementById(slId), vl = document.getElementById(valId);
+      if (e) e.value = Math.round(v*100); if (vl) vl.textContent = v.toFixed(2);
+    };
+    set('yoloConfNativeSlider','yoloConfNativeValue', t.yolo_conf_native);
+    set('yoloConf640Slider',   'yoloConf640Value',   t.yolo_conf_640);
+    set('iouThreshSlider',     'iouThreshValue',      t.iou_thresh);
+  }).catch(()=>{});
+
+  fetch('/classifier').then(r=>r.json()).then(c => {
+    const set = (slId, valId, v) => {
+      if (v == null) return;
+      const e = document.getElementById(slId), vl = document.getElementById(valId);
+      if (e) e.value = Math.round(v*100); if (vl) vl.textContent = v.toFixed(2);
+    };
+    set('clfConfTriggerSlider','clfConfTriggerValue', c.conf_trigger);
+    set('clfThreshSlider',     'clfThreshValue',      c.thresh);
+  }).catch(()=>{});
+
+  fetch('/display').then(r=>r.json()).then(d => {
+    if (d && d.gain != null) {
+      document.getElementById('displayGainSlider').value = Math.round(d.gain*100);
+      document.getElementById('displayGainValue').textContent = d.gain.toFixed(2)+'x';
     }
-    const yolo640Slider = document.getElementById('yoloConf640Slider');
-    const yolo640Value = document.getElementById('yoloConf640Value');
-    if (yolo640Slider && yolo640Value && t.yolo_conf_640 != null) {
-      yolo640Slider.value = Math.round(t.yolo_conf_640 * 100);
-      yolo640Value.textContent = t.yolo_conf_640.toFixed(2);
-    }
-    const iou = document.getElementById('iouThreshSlider');
-    const iouv = document.getElementById('iouThreshValue');
-    if (iou && iouv && t.iou_thresh != null) {
-      iou.value = Math.round(t.iou_thresh * 100);
-      iouv.textContent = t.iou_thresh.toFixed(2);
-    }
-  }).catch(() => {});
-  
-  // Initialize classifier controls
-  fetch('/classifier').then(r => r.json()).then(c => {
-    const clfToggle = document.getElementById('clfEnableToggle');
-    if (clfToggle && c.enabled != null) {
-      clfToggle.checked = !!c.enabled;
-    }
-    const clfTriggerSlider = document.getElementById('clfConfTriggerSlider');
-    const clfTriggerValue = document.getElementById('clfConfTriggerValue');
-    if (clfTriggerSlider && clfTriggerValue && c.conf_trigger != null) {
-      clfTriggerSlider.value = Math.round(c.conf_trigger * 100);
-      clfTriggerValue.textContent = c.conf_trigger.toFixed(2);
-    }
-    const clfThreshSlider = document.getElementById('clfThreshSlider');
-    const clfThreshValue = document.getElementById('clfThreshValue');
-    if (clfThreshSlider && clfThreshValue && c.thresh != null) {
-      clfThreshSlider.value = Math.round(c.thresh * 100);
-      clfThreshValue.textContent = c.thresh.toFixed(2);
-    }
-  }).catch(() => {});
-  fetch('/display').then(r => r.json()).then(d => {
-    _displaySettings = d || _displaySettings;
-    const slider = document.getElementById('displayGainSlider');
-    const valEl = document.getElementById('displayGainValue');
-    if (slider && valEl && d && d.gain != null) {
-      slider.value = Math.round(d.gain * 100);
-      valEl.textContent = d.gain.toFixed(2) + 'x';
-    }
-  }).catch(() => {});
-  // Initialize exposure fields
-  fetch('/exposure').then(r => r.json()).then(e => {
+  }).catch(()=>{});
+
+  fetch('/exposure').then(r=>r.json()).then(e => {
     if (Array.isArray(e.exposure_us) && e.exposure_us.length >= 3) {
-      const ids = ['expCam0', 'expCam1', 'expCam2'];
-      for (let i = 0; i < 3; i++) {
-        const el = document.getElementById(ids[i]);
-        if (el) el.value = Math.round(e.exposure_us[i]);
-      }
+      ['expCam0','expCam1','expCam2'].forEach((id, i) => {
+        const el = document.getElementById(id); if (el) el.value = Math.round(e.exposure_us[i]);
+      });
     }
-  }).catch(() => {});
+  }).catch(()=>{});
+
   attachExposureHandlers();
-  start();
+  startL2();
 });
 </script>
 </body>
@@ -3882,6 +3845,82 @@ def set_classifier(
 
 
 _no_cache_headers = {"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"}
+
+# ---- Line 1 placeholder JPEG (generated once on first request) ----
+_PLACEHOLDER_JPEG: Optional[bytes] = None
+
+def _get_placeholder_jpeg() -> bytes:
+    global _PLACEHOLDER_JPEG
+    if _PLACEHOLDER_JPEG is None:
+        img = np.zeros((360, 480, 3), dtype=np.uint8)
+        img[:] = (25, 28, 35)
+        cv2.putText(img, "Not Connected", (60, 165), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (55, 75, 105), 2)
+        cv2.putText(img, "LINE 1", (175, 210), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (40, 60, 90), 1)
+        ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 50])
+        _PLACEHOLDER_JPEG = bytes(buf) if ok else b""
+    return _PLACEHOLDER_JPEG
+
+
+# ---- Line 1 routes (placeholder — cameras not yet connected) ----
+
+@app.get("/l1/start")
+def l1_start():
+    global _l1_running, _l1_start_ts
+    with _l1_lock:
+        if not _l1_running:
+            _l1_running = True
+            _l1_start_ts = time.time()
+    return {"ok": True, "running": _l1_running}
+
+
+@app.get("/l1/stop")
+def l1_stop():
+    global _l1_running
+    with _l1_lock:
+        _l1_running = False
+    return {"ok": True, "running": False}
+
+
+@app.get("/l1/status")
+def l1_status():
+    with _l1_lock:
+        runtime_str = "00:00:00"
+        if _l1_running and _l1_start_ts > 0:
+            s = int(time.time() - _l1_start_ts)
+            runtime_str = f"{s // 3600:02d}:{(s % 3600) // 60:02d}:{s % 60:02d}"
+        return {
+            "running": _l1_running,
+            "state": "idle",
+            "runtime_str": runtime_str if _l1_running else "00:00:00",
+            "signal_enabled": _l1_signal_ui_enabled,
+            "cam_ips": LINE1_IPS,
+        }
+
+
+@app.get("/l1/signal")
+def l1_get_signal():
+    with _l1_lock:
+        return {"enabled": _l1_signal_ui_enabled}
+
+
+@app.post("/l1/signal")
+def l1_set_signal(enabled: int = 1):
+    global _l1_signal_ui_enabled
+    with _l1_lock:
+        _l1_signal_ui_enabled = bool(enabled)
+    return {"enabled": _l1_signal_ui_enabled}
+
+
+@app.get("/l1/result/{i}")
+def l1_result(i: int):
+    if i < 0 or i > 2:
+        raise HTTPException(status_code=404, detail="bad index")
+    return Response(_get_placeholder_jpeg(), media_type="image/jpeg", headers=_no_cache_headers)
+
+
+@app.get("/l1/stream")
+def l1_stream():
+    return Response(_get_placeholder_jpeg(), media_type="image/jpeg", headers=_no_cache_headers)
 
 
 def _resolve_annotated_root() -> Optional[Path]:
@@ -4699,6 +4738,14 @@ def history_page():
           <option value="night">Ночная (19:30 - 08:00)</option>
         </select>
       </div>
+      <div class="field">
+        <label>Линия</label>
+        <select id="lineFilter">
+          <option value="">Все линии</option>
+          <option value="2">Линия № 2</option>
+          <option value="1">Линия № 1</option>
+        </select>
+      </div>
       <button class="btn" onclick="loadHistory()">Показать</button>
       <button class="btn" onclick="resetFilters()">Сброс</button>
     </div>
@@ -4745,6 +4792,7 @@ function getFilters() {
   const startTime = document.getElementById('startTimeFilter').value || '';
   const endTime = document.getElementById('endTimeFilter').value || '';
   const shift = document.getElementById('shiftFilter').value || '';
+  const line = document.getElementById('lineFilter').value || '';
   const page = _currentPage;
   const params = new URLSearchParams();
   if (dayFrom) params.set('day_from', dayFrom);
@@ -4752,6 +4800,7 @@ function getFilters() {
   if (startTime) params.set('start_time', startTime);
   if (endTime) params.set('end_time', endTime);
   if (shift) params.set('shift', shift);
+  if (line) params.set('line', line);
   params.set('page', String(page));
   params.set('page_size', String(PAGE_SIZE));
   return params;
@@ -4763,6 +4812,7 @@ function resetFilters() {
   document.getElementById('startTimeFilter').value = '';
   document.getElementById('endTimeFilter').value = '';
   document.getElementById('shiftFilter').value = '';
+  document.getElementById('lineFilter').value = '';
   _currentPage = 1;
   loadHistory();
 }
@@ -4833,6 +4883,17 @@ async function loadHistory(append = false) {
   const shiftLegendEl = document.getElementById('shiftLegend');
   const pagerInfoEl = document.getElementById('pagerInfo');
   const grid = document.getElementById('grid');
+  // Line 1 has no camera data yet (placeholder); show empty immediately
+  const lineFilter = document.getElementById('lineFilter').value || '';
+  if (lineFilter === '1') {
+    _loadedItems = 0; _zoomItems = []; _currentPage = 1; _totalPages = 1;
+    grid.innerHTML = '<div class="card">Нет записей — Линия № 1 ещё не подключена.</div>';
+    metaEl.textContent = 'Линия № 1: нет данных';
+    shiftLegendEl.innerHTML = '';
+    if (pagerInfoEl) pagerInfoEl.textContent = 'Страница 1 / 1';
+    _loadingHistory = false;
+    return;
+  }
   try {
     const params = getFilters();
     const r = await fetch('/history-data?' + params.toString());
