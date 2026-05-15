@@ -2532,7 +2532,7 @@ def index():
 
     /* Left panel */
     .left { width: 330px; flex-shrink: 0; display: flex; flex-direction: column;
-            gap: 7px; overflow-y: auto; }
+            gap: 7px; overflow-y: auto; overflow-x: hidden; }
     .lcard { background: #151922; border-radius: 8px; padding: 9px 10px;
              display: flex; flex-direction: column; gap: 6px; }
     .lcard { border-top: 1px solid #252b38; }
@@ -2576,13 +2576,13 @@ def index():
     .sl-row { display: flex; flex-direction: column; gap: 1px; }
     .sl-lbl { font-size: 10px; color: #888; }
     .sl-inner { display: flex; align-items: center; gap: 3px; }
-    .sl-inner input[type=range] { flex: 1; height: 4px; border-radius: 2px;
+    .sl-inner input[type=range] { flex: 1; min-width: 0; height: 4px; border-radius: 2px;
                                   background: #2a2f3a; -webkit-appearance: none; outline: none; }
     .sl-inner input[type=range]::-webkit-slider-thumb { -webkit-appearance: none;
       width: 12px; height: 12px; border-radius: 50%; background: #2ecc71; cursor: pointer; }
     .sl-inner input[type=range]::-moz-range-thumb { width: 12px; height: 12px;
       border-radius: 50%; background: #2ecc71; cursor: pointer; border: none; }
-    .sl-val { font-size: 10px; color: #ccc; min-width: 34px; text-align: right; }
+    .sl-val { font-size: 10px; color: #ccc; min-width: 28px; text-align: right; flex-shrink: 0; }
 
     /* Exposure */
     .exp-row { display: flex; gap: 3px; align-items: center; }
